@@ -1,121 +1,56 @@
-"""
-01LIP - Linear Programming (CTU FNSPE)
-Module 02: Maximum Network Flow & Multi-Period Production-Inventory Planning
-Reference: Lecture Notes Section 1.6.2 (Figure 1.2) & Section 1.6.3 (Figure 1.3)
-"""
-
 import pulp
 
+# --- 1. Maximum network flow (Section 1.6.2) ---
+flow_model = pulp.LpProblem("Max_Flow", pulp.LpMaximize)
 
-def solve_max_network_flow(tol: float = 1e-7) -> None:
-    """
-    Finds the maximum steady-state data transmission rate (MB/s) from source 's'
-    to destination 't' through intermediate nodes 'a' and 'b'.
-    """
-    capacities = {
-        ("s", "a"): 4.0,
-        ("s", "b"): 2.0,
-        ("a", "b"): 1.0,
-        ("a", "t"): 2.0,
-        ("b", "t"): 4.0,
-    }
-    edges = list(capacities.keys())
+x_sa = pulp.LpVariable("x_sa", lowBound=0, upBound=4)
+x_sb = pulp.LpVariable("x_sb", lowBound=0, upBound=2)
+x_ab = pulp.LpVariable("x_ab", lowBound=0, upBound=1)
+x_at = pulp.LpVariable("x_at", lowBound=0, upBound=2)
+x_bt = pulp.LpVariable("x_bt", lowBound=0, upBound=4)
 
-    model = pulp.LpProblem("Max_Network_Flow", pulp.LpMaximize)
+# Maximize total flow from source s
+flow_model += x_sa + x_sb
 
-    # Flow variables x_uv with bounds 0 <= x_uv <= capacity(u, v)
-    flow = {
-        (u, v): pulp.LpVariable(f"x_{u}{v}", lowBound=0.0, upBound=cap)
-        for (u, v), cap in capacities.items()
-    }
+# Flow conservation at intermediate nodes a and b
+flow_model += x_sa == x_ab + x_at
+flow_model += x_sb + x_ab == x_bt
 
-    # Objective: maximize total flow leaving source 's'
-    model += flow[("s", "a")] + flow[("s", "b")], "Total_Throughput_MBps"
+flow_model.solve(pulp.PULP_CBC_CMD(msg=False))
 
-    # Flow conservation at intermediate nodes 'a' and 'b'
-    model += flow[("s", "a")] == flow[("a", "b")] + flow[("a", "t")], "Flow_Balance_Node_a"
-    model += flow[("s", "b")] + flow[("a", "b")] == flow[("b", "t")], "Flow_Balance_Node_b"
-
-    status = model.solve(pulp.PULP_CBC_CMD(msg=False))
-    max_rate = pulp.value(model.objective)
-
-    print("=== 1. Maximum Network Flow Problem ===")
-    print(f"Solver status   : {pulp.LpStatus[status]}")
-    for (u, v) in edges:
-        print(f"  {u} -> {v} : {pulp.value(flow[(u, v)]):.2f} / {capacities[(u, v)]:.2f} MB/s")
-    print(f"Max throughput  : {max_rate:.2f} MB/s")
-
-    # Validate node conservation and source-sink flow equality
-    inflow_t = pulp.value(flow[("a", "t")]) + pulp.value(flow[("b", "t")])
-    res_a = abs(pulp.value(flow[("s", "a")]) - (pulp.value(flow[("a", "b")]) + pulp.value(flow[("a", "t")])))
-    res_b = abs((pulp.value(flow[("s", "b")]) + pulp.value(flow[("a", "b")])) - pulp.value(flow[("b", "t")]))
-
-    assert abs(max_rate - inflow_t) <= tol, "Source outflow != sink inflow"
-    assert max(res_a, res_b) <= tol, "Node flow conservation residual exceeded tolerance"
-    print(f"Validation OK   : sink inflow={inflow_t:.2f} MB/s, max node residual={max(res_a, res_b):.2e}\n")
+print("--- Maximum Network Flow ---")
+print("Status:", pulp.LpStatus[flow_model.status])
+print("Flows:", x_sa.varValue, x_sb.varValue, x_ab.varValue, x_at.varValue, x_bt.varValue)
+print("Max rate =", pulp.value(flow_model.objective), "MB/s")
 
 
-def solve_production_inventory(tol: float = 1e-7) -> None:
-    """
-    Multi-period production and inventory planning with linearized absolute
-    production-change penalties |x_i - x_{i-1}| <= u_i.
-    """
-    T = 2
-    periods = range(1, T + 1)
-    demand = {1: 2.0, 2: 6.0}   # metric tons
-    x0 = 2.0                    # initial production rate (tons)
-    s0 = 0.0                    # initial inventory (tons)
-    sT = 0.0                    # required ending inventory (tons)
-    h = 1.0                     # holding cost (thousand CZK per ton)
-    k = 2.0                     # production change cost (thousand CZK per ton)
+# --- 2. Two-month production and inventory plan (Section 1.6.3) ---
+prod_model = pulp.LpProblem("Production_Plan", pulp.LpMinimize)
 
-    model = pulp.LpProblem("Production_Inventory_Planning", pulp.LpMinimize)
+# Production x1, x2; end-of-month inventory s1; production change u1, u2
+x1 = pulp.LpVariable("x1", lowBound=0)
+x2 = pulp.LpVariable("x2", lowBound=0)
+s1 = pulp.LpVariable("s1", lowBound=0)
+u1 = pulp.LpVariable("u1", lowBound=0)
+u2 = pulp.LpVariable("u2", lowBound=0)
 
-    x = {i: pulp.LpVariable(f"prod_{i}", lowBound=0.0) for i in periods}
-    s = {i: pulp.LpVariable(f"inv_{i}", lowBound=0.0) for i in range(0, T + 1)}
-    u = {i: pulp.LpVariable(f"change_{i}", lowBound=0.0) for i in periods}
+# Demand d1=2, d2=6, initial production x0=2, holding cost h=1, change cost k=2
+prod_model += 1 * s1 + 2 * (u1 + u2)
 
-    # Boundary inventory conditions
-    model += s[0] == s0, "Initial_Inventory"
-    model += s[T] == sT, "Final_Inventory"
+# Inventory balance (s0 = 0, s2 = 0)
+prod_model += x1 - s1 == 2
+prod_model += s1 + x2 == 6
 
-    # Objective: minimize holding cost + production adjustment cost
-    model += (
-        h * pulp.lpSum(s[i] for i in range(1, T))
-        + k * pulp.lpSum(u[i] for i in periods),
-        "Total_Cost_Thousand_CZK",
-    )
+# Linearized |x_i - x_{i-1}| <= u_i
+prod_model += -u1 <= x1 - 2
+prod_model += x1 - 2 <= u1
+prod_model += -u2 <= x2 - x1
+prod_model += x2 - x1 <= u2
 
-    for i in periods:
-        prev_x = x0 if i == 1 else x[i - 1]
-        # Inventory balance: s_{i-1} + x_i - s_i == d_i
-        model += s[i - 1] + x[i] - s[i] == demand[i], f"Inventory_Balance_t{i}"
-        # Linearized absolute value: -u_i <= x_i - x_{i-1} <= u_i
-        model += x[i] - prev_x <= u[i], f"Prod_Increase_t{i}"
-        model += prev_x - x[i] <= u[i], f"Prod_Decrease_t{i}"
+prod_model.solve(pulp.PULP_CBC_CMD(msg=False))
 
-    status = model.solve(pulp.PULP_CBC_CMD(msg=False))
-    opt_cost = pulp.value(model.objective)
-
-    print("=== 2. Multi-Period Production & Inventory Plan ===")
-    print(f"Solver status : {pulp.LpStatus[status]}")
-    for i in periods:
-        print(
-            f"  Month {i}: prod x_{i} = {pulp.value(x[i]):.2f} t, "
-            f"end-inv s_{i} = {pulp.value(s[i]):.2f} t, "
-            f"|dx_{i}| = {pulp.value(u[i]):.2f} t"
-        )
-    print(f"Minimum cost  : {opt_cost:.2f} thousand CZK")
-
-    # Validate inventory balance and exactness of u_i = |x_i - x_{i-1}|
-    for i in periods:
-        prev_x = x0 if i == 1 else pulp.value(x[i - 1])
-        bal = pulp.value(s[i - 1]) + pulp.value(x[i]) - pulp.value(s[i])
-        assert abs(bal - demand[i]) <= tol, f"Balance violated in period {i}"
-        assert abs(pulp.value(u[i]) - abs(pulp.value(x[i]) - prev_x)) <= tol
-    print("Validation OK : all inventory balances and linearized changes verified.\n")
-
-
-if __name__ == "__main__":
-    solve_max_network_flow()
-    solve_production_inventory()
+print("\n--- Production & Inventory Plan ---")
+print("Status:", pulp.LpStatus[prod_model.status])
+print("Month 1 prod =", x1.varValue, "Month 2 prod =", x2.varValue)
+print("End of month 1 inventory =", s1.varValue)
+print("Min cost =", pulp.value(prod_model.objective), "thousand CZK")
